@@ -250,18 +250,6 @@ Columns specific to the oracle and distractor scripts: `divergence` (Jaccard dis
 
 ---
 
-## Citation
-
-```bibtex
-@inproceedings{necessity2027,
-  title  = {Necessity, Not Provision: Counterfactual Attribution for
-            Retrieval-Augmented {SPARQL} Generation},
-  author = {Anonymous},
-  year   = {2027},
-  note   = {Under review}
-}
-```
-
 ## License
 
 MIT for the code. Instruct-to-SPARQL and Wikidata content remain under their own licenses.
