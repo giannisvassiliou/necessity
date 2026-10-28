@@ -29,6 +29,7 @@ Provision = ν + ρ. Necessity needs no reference query, no execution and no jud
 | `oracle_placebo.py` | Oracle (exactly the reference identifiers) and placebo (size-matched identifiers from other questions) | Table 1 (Oracle, Placebo), Table 3 rows 1 and 4 |
 | `oracle_distractors.py` | Oracle + distractors (gold padded to deployed size) and small placebo (gold-sized, no gold), completing the 2×2 | Table 3 rows 2 and 3 |
 | `build_instruction_embeddings.py` | Builds the example-retrieval index from `instructions.json` | setup |
+| `analysis.py` | Recomputes all Wikidata statistics from the CSVs above (no LLM or SPARQL calls) | Tables 1, 2, 3, 7, 12, Fig. 2, App. A.3 |
 
 ### Retrieval helper modules (imported by `exp1b_wired.py`)
 
@@ -45,7 +46,8 @@ Provision = ν + ρ. Necessity needs no reference query, no execution and no jud
 |---|---|
 | `query.json` | Instruct-to-SPARQL reference queries, `{id: sparql}`, 2,838 items, ids 0–2837 |
 | `instructions.json` | Natural-language paraphrases, `{id: [question, ...]}`; the first paraphrase is the test question, all paraphrases are indexed for example retrieval |
-| `test_indices.json` | Test-split indices; these items are evaluated and also removed from the retrieval pool |
+| `test_indices.json` | Test-split indices (518); these items are evaluated and also removed from the retrieval pool |
+| `gold_usable.json` | The 366 test items whose reference query executes (output of the screening step, shipped so it can be skipped) |
 
 Dataset: Ben Amor et al., *Instruct-to-SPARQL: A Text-to-SPARQL Dataset for Training SPARQL Agents*, CHIIR 2025.
 
@@ -56,7 +58,6 @@ Dataset: Ben Amor et al., *Instruct-to-SPARQL: A Text-to-SPARQL Dataset for Trai
 | `embeddings_output/instructions_embeddings.pkl` | `build_instruction_embeddings.py` |
 | `_wikidata_cache/wikidata_properties_en.csv` | `utilsPre.fetch_properties()`, from the live Wikidata Query Service |
 | `_wikidata_cache/prop_vecs_en_sentence-transformers_all-MiniLM-L6-v2.npy` | `utilsPre.embed_properties()` |
-| `gold_usable.json` | the screening step below |
 | `exp1b_sparql_cache.pkl`, `exp1b_sparql_cache_labels.pkl` | SPARQL-result and label caches, shared by all scripts |
 
 ### Not in this release
@@ -64,8 +65,6 @@ Dataset: Ben Amor et al., *Instruct-to-SPARQL: A Text-to-SPARQL Dataset for Trai
 Results for the following are reported in the paper, but their code is **not** included here:
 
 - `entprop` / `examples` retrieval ablations (Table 1);
-- element-level F1, divergence, correlation and regression analyses, Steiger/Williams tests, paired bootstrap CIs (Table 2, App. A.3);
-- decoding-noise floor estimation;
 - Llama-3.1-8B runs (Table 4, App. A.4);
 - DBpedia / DB25 (App. A.5);
 - CK25 and CK25-R (App. A.6);
@@ -81,17 +80,25 @@ Results for the following are reported in the paper, but their code is **not** i
 
 ```bash
 pip install anthropic SPARQLWrapper requests numpy pandas fastembed spacy \
-            sentence-transformers torch scikit-learn rdflib
+            sentence-transformers torch scikit-learn rdflib scipy
 python -m spacy download en_core_web_lg
 ```
 
+`scipy` is used only by `analysis.py` for exact p-values; without it, p-values fall back to a normal approximation.
+
 ## Configuration
 
-Set the API key as an environment variable. Do not put it on the command line:
+The three experiment scripts take the Anthropic API key from, in order of precedence:
+
+1. `--api-key sk-...`
+2. `--api-key-file key.txt` (a file containing only the key)
+3. the `ANTHROPIC_API_KEY` environment variable
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...          # Windows: set ANTHROPIC_API_KEY=sk-...
 ```
+
+The environment variable or a key file is recommended: a key passed with `--api-key` is stored in shell history. If you use a key file, keep it out of version control (see `.gitignore` below).
 
 Before running, edit `USER_AGENT` at the top of `exp1b_wired.py` to include your own contact address. Wikimedia's API policy requires a real contact in the User-Agent.
 
@@ -104,10 +111,10 @@ All scripts call the model at temperature 0, with at most 1,200 output tokens pe
 ### 0. Build the example-retrieval index (once)
 
 ```bash
-python build_instruction_embeddings.py
+python build_instruction_embeddings.py --parallel 0
 ```
 
-This embeds every paraphrase in `instructions.json` with `BAAI/bge-large-en-v1.5` and writes `embeddings_output/instructions_embeddings.pkl`.
+This embeds all 14,190 paraphrases in `instructions.json` (5 per question) with `BAAI/bge-large-en-v1.5` and writes `embeddings_output/instructions_embeddings.pkl`. The first run downloads the model (about 1.3 GB). Embedding on a CPU takes roughly 10–40 minutes and prints progress every 500 paraphrases. `--parallel 0` uses all CPU cores; omit it if multiprocessing fails on your platform.
 
 ### 1. Screen the reference queries (no LLM calls)
 
@@ -118,7 +125,7 @@ python exp1b_wired.py --preflight --split-filter test_indices.json \
     --limit 0 --preflight-timeout 30 --gold-filter gold_usable.json
 ```
 
-Expected: 366 of 518 queries usable (Table 6). This step needs only `requests` and `SPARQLWrapper`; it does not load the retrieval modules.
+Expected: 366 of 518 queries usable (Table 6). This step needs only `requests` and `SPARQLWrapper`; it does not load the retrieval modules. The shipped `gold_usable.json` is the result of this step, so it can be skipped.
 
 ### 2. Run the bare and method arms
 
@@ -158,6 +165,33 @@ python oracle_distractors.py --results r_keep.csv \
 ```
 
 The summary it prints is restricted to the items present in all four conditions.
+
+### 5. Statistics
+
+```bash
+python analysis.py --results r_keep.csv --oracle r_oracle_placebo.csv \
+    --distractors r_distractors.csv --queries query.json --json stats.json
+```
+
+This makes no LLM or SPARQL calls and runs in seconds. `--oracle` and `--distractors` are optional; their sections are skipped if the files are missing. It prints seven sections and writes every number to `stats.json`:
+
+| Section | Paper |
+|---|---|
+| 1. Attribution and answer quality of the full pipeline | Table 1 |
+| 2. Correlations with element-level F1 gain, Williams/Steiger tests, partial correlations, regression, median split, answer-level correlations | Table 2, App. A.3 |
+| 3. Attribution by candidate recall | Fig. 2, Table 7 |
+| 4. Decoding-noise floor | App. A.3 |
+| 5. Oracle and placebo | Table 1 |
+| 6. Reference presence × candidate-set size | Table 3 |
+| 7. Per-question anonymisation | Table 12, App. A.7 |
+
+Definitions used:
+- **element F1**: F1 between the identifier set of a generated query and that of the reference query;
+- **gain**: element F1 of the method arm minus that of the bare arm;
+- **divergence** δ = \|C(Q_m) \ C(Q_b)\| / \|C(Q_m)\|, and its unsupplied part μ_new, so that δ = ν + μ_new;
+- **decoding-noise floor** φ, computed between the `public_bare` and `anon_bare` arms. The bare arm receives no retrieved context, so these two arms use the same prompt and differ only in being separate API calls.
+
+Confidence intervals are 95% percentile intervals from a paired bootstrap over questions (10,000 resamples, `--seed 0`).
 
 ### Smoke test
 
@@ -218,6 +252,8 @@ Columns specific to `exp1b_wired.py`: `n_tokens_used`, `n_real_leaked`, `memory_
 
 Columns specific to the oracle and distractor scripts: `divergence` (Jaccard distance between the bare and method identifier sets), and `n_gold` / `n_distractors` for the distractor run.
 
+Note that the `divergence` column is a symmetric Jaccard distance, used for the placebo-versus-oracle comparison. The divergence δ in Table 2 is the asymmetric quantity defined above, computed by `analysis.py` from the stored queries.
+
 ---
 
 ## Implementation notes
@@ -248,7 +284,37 @@ Columns specific to the oracle and distractor scripts: `divergence` (Jaccard dis
 - **Live endpoint.** Reference and generated queries execute against the live Wikidata Query Service, so answer sets reflect the state of Wikidata at run time.
 - **Generator.** Results were obtained with `claude-sonnet-4-5-20250929` in August 2026. Even at temperature 0, API outputs are not guaranteed to be bit-identical across runs.
 
+Expect the provision/necessity gap and the direction of every effect to reproduce, with individual values differing slightly from the paper.
+
 ---
+
+## `.gitignore`
+
+Generated files, caches and keys should not be committed:
+
+```
+key.txt
+*.csv
+stats.json
+embeddings_output/
+_wikidata_cache/
+exp1b_sparql_cache*.pkl
+__pycache__/
+```
+
+---
+
+## Citation
+
+```bibtex
+@inproceedings{necessity2027,
+  title  = {Necessity, Not Provision: Counterfactual Attribution for
+            Retrieval-Augmented {SPARQL} Generation},
+  author = {Anonymous},
+  year   = {2027},
+  note   = {Under review}
+}
+```
 
 ## License
 
