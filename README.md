@@ -288,33 +288,7 @@ Expect the provision/necessity gap and the direction of every effect to reproduc
 
 ---
 
-## `.gitignore`
 
-Generated files, caches and keys should not be committed:
-
-```
-key.txt
-*.csv
-stats.json
-embeddings_output/
-_wikidata_cache/
-exp1b_sparql_cache*.pkl
-__pycache__/
-```
-
----
-
-## Citation
-
-```bibtex
-@inproceedings{necessity2027,
-  title  = {Necessity, Not Provision: Counterfactual Attribution for
-            Retrieval-Augmented {SPARQL} Generation},
-  author = {Anonymous},
-  year   = {2027},
-  note   = {Under review}
-}
-```
 
 ## License
 
