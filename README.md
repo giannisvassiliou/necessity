@@ -19,17 +19,49 @@ Provision = ν + ρ. Necessity needs no reference query, no execution and no jud
 
 ---
 
-## What is in this release
+## Repository contents
+
+### Experiment scripts
 
 | File | Purpose | Paper |
 |---|---|---|
 | `exp1b_wired.py` | Main Wikidata runner: retrieval pipeline, bare and method arms, attribution, answer-set scoring, gold screening, per-question anonymisation | Table 1 (Bare, Full pipeline), Table 6, Fig. 2, Table 7, Table 12 / App. A.7 |
 | `oracle_placebo.py` | Oracle (exactly the reference identifiers) and placebo (size-matched identifiers from other questions) | Table 1 (Oracle, Placebo), Table 3 rows 1 and 4 |
 | `oracle_distractors.py` | Oracle + distractors (gold padded to deployed size) and small placebo (gold-sized, no gold), completing the 2×2 | Table 3 rows 2 and 3 |
+| `build_instruction_embeddings.py` | Builds the example-retrieval index from `instructions.json` | setup |
 
-### Not yet in this release
+### Retrieval helper modules (imported by `exp1b_wired.py`)
 
-Results for the following are reported in the paper, but their code is **not** in this repository yet:
+| Module | Used for |
+|---|---|
+| `utilLookup.py` | Wikidata property search (`wbsearchentities`, type=property) |
+| `utilSem2.py` | Entity search and re-ranking by label match and MiniLM similarity |
+| `utilsPre.py` | Downloads all Wikidata properties and embeds them with `all-MiniLM-L6-v2`; nearest-property search |
+| `utilExpre.py` | rdflib-based extraction of entities and predicates from retrieved example queries |
+
+### Data
+
+| File | Description |
+|---|---|
+| `query.json` | Instruct-to-SPARQL reference queries, `{id: sparql}`, 2,838 items, ids 0–2837 |
+| `instructions.json` | Natural-language paraphrases, `{id: [question, ...]}`; the first paraphrase is the test question, all paraphrases are indexed for example retrieval |
+| `test_indices.json` | Test-split indices; these items are evaluated and also removed from the retrieval pool |
+
+Dataset: Ben Amor et al., *Instruct-to-SPARQL: A Text-to-SPARQL Dataset for Training SPARQL Agents*, CHIIR 2025.
+
+### Generated on first run (not stored in the repository)
+
+| File | Produced by |
+|---|---|
+| `embeddings_output/instructions_embeddings.pkl` | `build_instruction_embeddings.py` |
+| `_wikidata_cache/wikidata_properties_en.csv` | `utilsPre.fetch_properties()`, from the live Wikidata Query Service |
+| `_wikidata_cache/prop_vecs_en_sentence-transformers_all-MiniLM-L6-v2.npy` | `utilsPre.embed_properties()` |
+| `gold_usable.json` | the screening step below |
+| `exp1b_sparql_cache.pkl`, `exp1b_sparql_cache_labels.pkl` | SPARQL-result and label caches, shared by all scripts |
+
+### Not in this release
+
+Results for the following are reported in the paper, but their code is **not** included here:
 
 - `entprop` / `examples` retrieval ablations (Table 1);
 - element-level F1, divergence, correlation and regression analyses, Steiger/Williams tests, paired bootstrap CIs (Table 2, App. A.3);
@@ -48,34 +80,10 @@ Results for the following are reported in the paper, but their code is **not** i
 - Network access to the Wikidata Query Service and the Wikidata Action API
 
 ```bash
-pip install anthropic SPARQLWrapper requests numpy fastembed spacy sentence-transformers rdflib pandas
+pip install anthropic SPARQLWrapper requests numpy pandas fastembed spacy \
+            sentence-transformers torch scikit-learn rdflib
 python -m spacy download en_core_web_lg
 ```
-
-### Pipeline helper modules
-
-`exp1b_wired.py` imports four helper modules from the original retrieval pipeline. They must sit in the same directory:
-
-| Module | Used for |
-|---|---|
-| `utilLookup.py` | Wikidata property search (`wbsearchentities`) |
-| `utilSem2.py` | Entity linking and ranking |
-| `utilsPre.py` | Property table download and MiniLM property embeddings |
-| `utilExpre.py` | rdflib-based extraction of entities and predicates from example queries |
-
-### Data
-
-| File | Description |
-|---|---|
-| `query.json` | Instruct-to-SPARQL reference queries, `{id: sparql}` |
-| `instructions.json` | Natural-language paraphrases, `{id: [question, ...]}`; the first paraphrase is used |
-| `embeddings_output/instructions_embeddings.pkl` | `bge-large-en-v1.5` embeddings of all paraphrases (example retrieval index) |
-| `test_indices.json` | Test-split indices; these are also excluded from the retrieval pool |
-| `gold_usable.json` | Produced by the screening step below |
-
-Dataset: Ben Amor et al., *Instruct-to-SPARQL*, CHIIR 2025.
-
----
 
 ## Configuration
 
@@ -87,11 +95,19 @@ export ANTHROPIC_API_KEY=sk-...          # Windows: set ANTHROPIC_API_KEY=sk-...
 
 Before running, edit `USER_AGENT` at the top of `exp1b_wired.py` to include your own contact address. Wikimedia's API policy requires a real contact in the User-Agent.
 
-All scripts call the model at temperature 0. They throttle every request to `wikidata.org` and cache SPARQL results and labels in `exp1b_sparql_cache.pkl` and `exp1b_sparql_cache_labels.pkl`.
+All scripts call the model at temperature 0, with at most 1,200 output tokens per generation.
 
 ---
 
 ## Reproducing the Wikidata results
+
+### 0. Build the example-retrieval index (once)
+
+```bash
+python build_instruction_embeddings.py
+```
+
+This embeds every paraphrase in `instructions.json` with `BAAI/bge-large-en-v1.5` and writes `embeddings_output/instructions_embeddings.pkl`.
 
 ### 1. Screen the reference queries (no LLM calls)
 
@@ -102,22 +118,27 @@ python exp1b_wired.py --preflight --split-filter test_indices.json \
     --limit 0 --preflight-timeout 30 --gold-filter gold_usable.json
 ```
 
-Expected: 366 of 518 queries usable (Table 6).
+Expected: 366 of 518 queries usable (Table 6). This step needs only `requests` and `SPARQLWrapper`; it does not load the retrieval modules.
 
-### 2. Run the bare and method arms (public identifiers)
+### 2. Run the bare and method arms
 
 ```bash
 python exp1b_wired.py --split-filter test_indices.json --use-gold-filter \
     --limit 0 --label-mode keep --rephrase both --out r_keep.csv --resume
 ```
 
-This writes four rows per question to `r_keep.csv`, one each for `public_bare`, `public_method`, `anon_bare` and `anon_method`. The public rows give the Bare and Full-pipeline results. The anonymised rows give the per-question anonymisation experiment (App. A.7); for the `strip` variant, rerun with `--label-mode strip --out r_strip.csv`.
+On first use this also downloads and embeds the Wikidata property list into `_wikidata_cache/`, which takes a few minutes.
+
+The run writes four rows per question to `r_keep.csv`, one each for `public_bare`, `public_method`, `anon_bare` and `anon_method`:
+- the public rows give the Bare and Full-pipeline results;
+- the anonymised rows give the per-question anonymisation experiment (App. A.7). For the `strip` variant, rerun with `--label-mode strip --out r_strip.csv`.
+
+Each question costs 5 LLM calls (one rephrase plus four generations) and about 5 SPARQL executions. A full run of 366 questions is roughly 1,830 calls.
 
 Leakage controls are applied during example retrieval:
-
 - every test item is removed from the retrieval pool (`--split-filter`);
 - examples sharing the test query's id are dropped;
-- examples whose normalised SPARQL is identical to the reference are dropped (78 queries occur under several ids).
+- examples whose normalised SPARQL is identical to the reference are dropped (78 queries occur under two to four ids).
 
 The run reports how many examples each filter removed.
 
@@ -127,7 +148,7 @@ The run reports how many examples each filter removed.
 python oracle_placebo.py --results r_keep.csv --out r_oracle_placebo.csv --resume
 ```
 
-This script does not rerun the bare arm; it reads the `public_bare` row from `r_keep.csv`. Two generations per question.
+This script does not rerun the bare arm; it reads the `public_bare` row from `r_keep.csv`. Two generations per question. It does not load the retrieval modules.
 
 ### 4. Oracle + distractors and small placebo
 
@@ -137,6 +158,42 @@ python oracle_distractors.py --results r_keep.csv \
 ```
 
 The summary it prints is restricted to the items present in all four conditions.
+
+### Smoke test
+
+To check the setup on a single question before a full run:
+
+```bash
+python exp1b_wired.py --split-filter test_indices.json --limit 1 --out smoke.csv
+```
+
+`smoke.csv` should contain four rows. The printed method context should contain all three of:
+- `Found: …` lines (entity linking);
+- score-prefixed property lines (embedding property search);
+- `qid:` example lines.
+
+If only `qid:` lines appear, a retrieval module is failing silently (see *Reproducibility notes*).
+
+---
+
+## How a question is processed
+
+```
+question
+ ├─ rephrase into Wikidata-oriented form (1 LLM call, shared by both arms)
+ ├─ build retrieval context
+ │    ├─ noun/verb phrases (spaCy)  → property search        (utilLookup)
+ │    ├─ named entities (spaCy)     → entity linking         (utilSem2)
+ │    ├─ phrases                    → MiniLM property search (utilsPre)
+ │    └─ question                   → top-3 similar examples (bge-large index)
+ │                                    + their identifiers and property labels
+ ├─ execute the reference query
+ ├─ bare arm:   generate SPARQL from the question alone → execute → score
+ ├─ method arm: generate SPARQL with the context        → execute → score
+ └─ attribution: partition method-arm identifiers into N / R / L
+```
+
+Every identifier that appears anywhere in the retrieved context counts as a candidate, including those inside retrieved examples.
 
 ---
 
@@ -178,7 +235,18 @@ Columns specific to the oracle and distractor scripts: `divergence` (Jaccard dis
 - The oracle uses the header *"USE THESE IDENTIFIERS. They are the ones the query needs:"*.
 - The placebo, small-placebo and oracle + distractors conditions use the deployed pipeline's header.
 
-**Cost.** One full Wikidata run (366 questions, rephrase plus four arms) is about 1,830 Sonnet calls.
+---
+
+## Reproducibility notes
+
+- **Live property list.** `_wikidata_cache/` is built from the live Wikidata Query Service on first run. Wikidata properties are added and deprecated over time, so property-search candidates can differ slightly from the reported runs. The one-off download has a 180 s timeout; if it fails under load, rerun.
+- **API throttling.** `exp1b_wired.py` paces calls made through `requests.get`. `utilLookup` and `utilSem2` use their own `requests.Session`, so the pacing does not reach them:
+  - `utilSem2` retries on HTTP 429;
+  - `utilLookup` does not retry. On a 429 it prints `Error searching` and returns no results, so property lookup contributes nothing for that phrase.
+
+  Candidate sets can therefore vary slightly with Wikidata API load.
+- **Live endpoint.** Reference and generated queries execute against the live Wikidata Query Service, so answer sets reflect the state of Wikidata at run time.
+- **Generator.** Results were obtained with `claude-sonnet-4-5-20250929` in August 2026. Even at temperature 0, API outputs are not guaranteed to be bit-identical across runs.
 
 ---
 
